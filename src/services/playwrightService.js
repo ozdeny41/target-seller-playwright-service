@@ -3189,14 +3189,17 @@ class PlaywrightService {
           console.warn(`⚠️ ${this._tag} Cookie enjeksiyonu hatası: ${cookieErr.message}`);
         }
         
-        // Adım 2: Ürün sayfasına git
+        // KRİTİK: Context setup'ta posta kodu + para birimi zaten ayarlandı
+        // Gereksiz navigasyonları atla — direkt AOD URL'ye git (hızlı + timeout yok)
+        // Glow API'yi sadece bir kez çalıştır (cookie güncelleme için)
+        
+        // Adım 2: Ürün sayfasına git + Glow API (tek navigasyon)
         console.log(`🔗 ${this._tag} Ürün sayfasına gidiliyor: ${productUrl}`);
-        await page.goto(productUrl, { waitUntil: 'domcontentloaded', timeout: 18000 });
+        await page.goto(productUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
         await this.safeWait(page, 2000);
         
-        // Adım 3: Glow API ile teslimat ülkesini değiştir + popup fallback
-        console.log(`🌍 ${this._tag} Glow API + popup ile ${amazonCountryCode} seçiliyor...`);
-        // KRİTİK: Marketplace'e göre posta kodu — Glow API'ye zip code gönder
+        // Adım 3: Glow API ile teslimat ülkesini doğrula
+        console.log(`🌍 ${this._tag} Glow API + postcode ile ${amazonCountryCode} doğrulanıyor...`);
         const marketplacePostcodesForGlow = {
           'amazon.co.uk': 'N1 3QP',
           'amazon.de': '10115',
@@ -3227,19 +3230,14 @@ class PlaywrightService {
         }, { countryCode: amazonCountryCode, zipCode: postcodeForGlow }).catch(e => ({ error: e.message }));
         console.log(`📍 ${this._tag} Glow API: ${JSON.stringify(glowResult)}`);
         
-        // Glow API sonrası sayfayı yenile (cookie'ler güncellendi)
-        await page.goto(productUrl, { waitUntil: 'domcontentloaded', timeout: 18000 });
-        await this.safeWait(page, 2000);
-        
-        // Teslimat adresi doğrula
+        // Teslimat adresi doğrula (mevcut sayfadan — yeniden yükleme YOK)
         const deliveryCheck = await page.evaluate(() => {
           const el = document.querySelector('#glow-ingress-line2, #contextualIngressPtLabel_deliveryShortLine');
           return el ? el.textContent.trim() : '';
         }).catch(() => '');
         console.log(`📍 ${this._tag} Teslimat: "${deliveryCheck}"`);
         
-        // KRİTİK: Teslimat ülkesi doğru mu kontrol et
-        // "London N1 3QP" gibi UK adres bilgileri de kabul edilmeli
+        // KRİTİK: Teslimat doğru mu? Context setup'ta posta kodu ayarlandıysa genellikle doğrudur
         const deliveryLower = deliveryCheck.toLowerCase();
         const isDeliveryCorrect = deliveryLower.includes('united kingdom') || 
           deliveryLower.includes('uk') || 
@@ -3253,37 +3251,29 @@ class PlaywrightService {
           deliveryLower.includes('madrid') ||
           deliveryLower.includes('roma') ||
           deliveryLower.includes('tokyo') ||
-          /[a-z]{1,2}\d{1,2}\s*\d[a-z]{2}/i.test(deliveryCheck) || // UK postcode pattern (N1 3QP, SW1A 1AA vb.)
-          /\d{5}/.test(deliveryCheck); // Kıta Avrupası/ABD/JP posta kodu pattern
+          /[a-z]{1,2}\d{1,2}\s*\d[a-z]{2}/i.test(deliveryCheck) ||
+          /\d{5}/.test(deliveryCheck);
         
         if (!isDeliveryCorrect) {
           console.log(`⚠️ ${this._tag} Hedef ülke seçili değil ("${deliveryCheck}"), popup ile deneniyor...`);
           const popupResult = await this.selectCountryAndCurrency(page, targetCountry, sourceMarketplace, productUrl);
           if (popupResult.success) {
-            console.log(`✅ ${this._tag} Popup ile UK seçildi`);
-            await page.goto(productUrl, { waitUntil: 'domcontentloaded', timeout: 18000 });
-            await this.safeWait(page, 2000);
+            console.log(`✅ ${this._tag} Popup ile hedef ülke seçildi`);
           } else {
-            console.warn(`⚠️ ${this._tag} Popup ile de UK seçilemedi: ${popupResult.error}`);
+            console.warn(`⚠️ ${this._tag} Popup ile de hedef ülke seçilemedi: ${popupResult.error}`);
           }
-          
-          // Son doğrulama
-          const finalCheck = await page.evaluate(() => {
-            const el = document.querySelector('#glow-ingress-line2, #contextualIngressPtLabel_deliveryShortLine');
-            return el ? el.textContent.trim() : '';
-          }).catch(() => '');
-          console.log(`📍 ${this._tag} Son teslimat doğrulama: "${finalCheck}"`);
+        } else {
+          console.log(`✅ ${this._tag} Teslimat adresi doğru: "${deliveryCheck}"`);
         }
         
-        // Adım 4: Ülke seçimi sonrası direkt AOD URL — See All Buying Options ürünlerinde buton tıklaması sidebar'ı boş açıyor
-        // directAodUrl ile gidince sidebar düzgün yükleniyor (olp-opf-redir)
+        // Adım 4: Direkt AOD URL'ye git (ürün sayfasını tekrar yüklemeden)
         console.log(`🔗 ${this._tag} directAodUrl ile AOD sayfasına gidiliyor: ${directAodUrl}`);
-        await page.goto(directAodUrl, { waitUntil: 'domcontentloaded', timeout: 18000 });
+        await page.goto(directAodUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
         await this.safeWait(page, 2000);
       } else {
         // targetCountry yoksa direkt AOD URL'ye git
         console.log(`🔗 ${this._tag} AOD sayfasına gidiliyor (ülke seçimi yok): ${directAodUrl}`);
-        await page.goto(directAodUrl, { waitUntil: 'domcontentloaded', timeout: 18000 });
+        await page.goto(directAodUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
         await this.safeWait(page, 2000);
       }
       
