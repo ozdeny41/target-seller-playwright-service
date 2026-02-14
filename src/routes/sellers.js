@@ -165,6 +165,14 @@ router.post('/', async (req, res, next) => {
     });
     
     if (result.success) {
+      // KRİTİK: hasNoSellers flag'i varsa — ürün satışta değil, DB'deki eski sahte kayıtları temizle
+      if (result.data?.hasNoSellers) {
+        console.log(`🚫 [Target Seller Service] ${asinList[0]} için satıcı YOK (unavailable) — DB'deki eski kayıtlar temizleniyor`);
+        targetSellerDbService.deleteSellersForAsin(asinList[0], scrapingMarketplace)
+          .catch(e => console.error(`❌ [TargetSellerDB] ${asinList[0]} eski kayıt silme hatası:`, e.message));
+        return res.json({ ok: true, data: result.data });
+      }
+      
       // KRİTİK: Veri çekildi — HEMEN Target-Seller-Postgresql'e kaydet
       const sellersList = result.data?.sellers || result.data?.offers || [];
       if (sellersList.length > 0) {
@@ -232,6 +240,14 @@ router.get('/:asin', async (req, res, next) => {
     });
     
     if (result.success) {
+      // KRİTİK: hasNoSellers flag'i varsa — ürün satışta değil, DB'deki eski sahte kayıtları temizle
+      if (result.data?.hasNoSellers) {
+        console.log(`🚫 [Target Seller Service] ${asin} için satıcı YOK (unavailable) — DB'deki eski kayıtlar temizleniyor (GET)`);
+        targetSellerDbService.deleteSellersForAsin(asin, scrapingMarketplace)
+          .catch(e => console.error(`❌ [TargetSellerDB] ${asin} eski kayıt silme hatası (GET):`, e.message));
+        return res.json({ ok: true, data: result.data });
+      }
+      
       // KRİTİK: GET ile de veri çekildiğinde Target DB'ye kaydet
       const sellersList = result.data?.sellers || result.data?.offers || [];
       if (sellersList.length > 0) {

@@ -2038,6 +2038,19 @@ class PlaywrightService {
       const offerText = await offerElement.textContent().catch(() => '');
       console.log(`🔍 ${this._tag} Offer ${index} text content (ilk 200 karakter): ${offerText.substring(0, 200)}`);
       
+      // KRİTİK: Boş veya anlamsız offer — fiyat, satıcı adı, condition hiçbiri yoksa atla
+      // Amazon bazen "Currently unavailable" ürünler için boş #aod-offer DOM elementi bırakır
+      const cleanedText = (offerText || '').replace(/\s+/g, ' ').trim();
+      if (cleanedText.length < 10) {
+        console.log(`⚠️ ${this._tag} Offer ${index} BOŞ veya çok kısa içerik (${cleanedText.length} karakter), atlanıyor`);
+        return null;
+      }
+      // "Currently unavailable" veya "no sellers" mesajı varsa da atla
+      if (/currently\s*unavailable/i.test(cleanedText) || /no\s+other\s+sellers\s+matching/i.test(cleanedText) || /we\s+don.*t\s+know\s+when/i.test(cleanedText)) {
+        console.log(`⚠️ ${this._tag} Offer ${index} "unavailable/no sellers" mesajı içeriyor, atlanıyor`);
+        return null;
+      }
+      
       // Condition (New, Used - Like New, Used - Very Good, vb.)
       let condition = null;
       let isNew = false;
@@ -3565,6 +3578,56 @@ class PlaywrightService {
           }
         }
       } catch (_) {}
+      
+      // KRİTİK: #aod-filter elementinde "no other sellers matching" mesajı var mı kontrol et
+      // Amazon "Currently unavailable" ürünlerde bu mesajı gösteriyor — satıcı yok demek
+      let hasNoSellers = false;
+      try {
+        const aodFilterEl = await page.$('#aod-filter').catch(() => null);
+        if (aodFilterEl) {
+          const filterText = await aodFilterEl.evaluate((el) => el.textContent || '').catch(() => '');
+          if (/no\s+other\s+sellers\s+matching/i.test(filterText) || /currently.*unavailable/i.test(filterText)) {
+            hasNoSellers = true;
+            console.log(`🚫 ${this._tag} #aod-filter: "No other sellers matching" mesajı tespit edildi — SIFIR satıcı`);
+          }
+        }
+      } catch (_) {}
+      
+      // KRİTİK: Buybox alanında "Currently unavailable" kontrolü
+      if (!hasNoSellers) {
+        try {
+          const buyboxEl = await page.$('#aod-pinned-offer, #aod-asin-block-asin').catch(() => null);
+          if (buyboxEl) {
+            const buyboxText = await buyboxEl.evaluate((el) => el.textContent || '').catch(() => '');
+            if (/currently\s*unavailable/i.test(buyboxText) && /we\s+don.*t\s+know\s+when/i.test(buyboxText)) {
+              hasNoSellers = true;
+              console.log(`🚫 ${this._tag} Buybox: "Currently unavailable" tespit edildi — SIFIR satıcı`);
+            }
+          }
+        } catch (_) {}
+      }
+      
+      // Eğer hiç satıcı yoksa, direkt boş sonuç döndür — DOM parse etmeye gerek yok
+      if (hasNoSellers) {
+        console.log(`🚫 ${this._tag} Ürün satışta değil veya satıcı yok, boş sonuç döndürülüyor`);
+        return {
+          success: true,
+          data: {
+            asin: asin,
+            sourceMarketplace: sourceMarketplace,
+            targetCountry: targetCountry,
+            totalSellers: 0,
+            sellers: [],
+            marketplace: 'source',
+            buybox: null,
+            hasNoBuybox: true,
+            hasNoSellers: true,
+            unavailableMessage: 'Currently unavailable - no sellers found'
+          },
+          error: null,
+          status: 200
+        };
+      }
       
       // Toplam satıcı sayısını bul
       let totalSellers = 0;

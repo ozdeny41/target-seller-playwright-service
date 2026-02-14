@@ -151,6 +151,33 @@ async function saveSellers(asin, targetMarketplace, targetCountry, sellers) {
 }
 
 /**
+ * Belirli bir ASIN + targetMarketplace için tüm TargetSeller kayıtlarını sil.
+ * "Currently unavailable" ürünler için çağrılır — DB'de sahte/eski kayıt kalmasın.
+ *
+ * @param {string} asin
+ * @param {string} targetMarketplace
+ */
+async function deleteSellersForAsin(asin, targetMarketplace) {
+  const db = getPool();
+  if (!db) return;
+
+  try {
+    const result = await db.query(
+      `DELETE FROM "TargetSeller" WHERE asin = $1 AND "targetMarketplace" = $2`,
+      [asin, targetMarketplace || 'amazon.com']
+    );
+    const deleted = result.rowCount || 0;
+    if (deleted > 0) {
+      console.log(`🗑️ [TargetSellerDB] ${asin} (${targetMarketplace}) → ${deleted} eski kayıt silindi (ürün unavailable)`);
+    } else {
+      console.log(`ℹ️ [TargetSellerDB] ${asin} (${targetMarketplace}) → silinecek kayıt yok`);
+    }
+  } catch (e) {
+    console.error(`❌ [TargetSellerDB] ${asin} silme hatası:`, e.message);
+  }
+}
+
+/**
  * DB bağlantı testi
  */
 async function testConnection() {
@@ -166,4 +193,4 @@ async function testConnection() {
   }
 }
 
-module.exports = { saveSellers, testConnection };
+module.exports = { saveSellers, deleteSellersForAsin, testConnection };
