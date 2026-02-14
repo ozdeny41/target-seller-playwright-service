@@ -228,9 +228,9 @@ class PlaywrightService {
         'amazon.it': 'IT', 'amazon.es': 'ES', 'amazon.co.jp': 'JP', 'amazon.ca': 'CA'
       };
       const sourceCountry = marketplaceToCountry[sourceMarketplace];
-      if (sourceCountry && amazonCountryCode === sourceCountry) {
-        console.log(`✅ ${this._tag} Kaynak marketplace zaten hedef ülke (${sourceMarketplace} = ${amazonCountryCode}), ülke seçimi atlanıyor`);
-        return { success: true };
+      const isLocalMarketplace = sourceCountry && amazonCountryCode === sourceCountry;
+      if (isLocalMarketplace) {
+        console.log(`📍 ${this._tag} Yerel marketplace (${sourceMarketplace} = ${amazonCountryCode}), posta kodu ile adres ayarlanacak — ATLANMIYOR`);
       }
       
       // Para birimi seçimi - Kaynak mağazaya göre para birimi seçilmeli
@@ -711,6 +711,106 @@ class PlaywrightService {
       }
       await this.safeWait(page, 1000); // 2s -> 1s
       
+      // KRİTİK: Yerel marketplace ise posta kodu gir, ülke dropdown'u kullanma
+      let postcodeSetSuccessfully = false;
+      if (isLocalMarketplace) {
+        const marketplacePostcodes = {
+          'amazon.co.uk': 'N1 3QP',
+          'amazon.de': '10115',
+          'amazon.fr': '75001',
+          'amazon.it': '00100',
+          'amazon.es': '28001',
+          'amazon.co.jp': '100-0001',
+          'amazon.com': '10001',
+          'amazon.ca': 'M5V 2T6'
+        };
+        const postcode = marketplacePostcodes[sourceMarketplace] || '';
+        console.log(`📮 ${this._tag} Posta kodu ile adres ayarlanıyor: "${postcode}" (${sourceMarketplace})`);
+        
+        if (postcode) {
+          try {
+            // Posta kodu input alanını bul
+            let postcodeInput = null;
+            const postcodeInputSelectors = [
+              '#GLUXZipUpdateInput',
+              'input#GLUXZipUpdateInput',
+              'input[aria-label*="postcode"]',
+              'input[aria-label*="postal"]',
+              'input[aria-label*="ZIP"]',
+              'input[autocomplete="postal-code"]'
+            ];
+            for (const sel of postcodeInputSelectors) {
+              postcodeInput = await page.waitForSelector(sel, { timeout: 5000, state: 'visible' }).catch(() => null);
+              if (postcodeInput) {
+                console.log(`✅ ${this._tag} Posta kodu input bulundu: ${sel}`);
+                break;
+              }
+            }
+            
+            if (postcodeInput) {
+              // Input'u temizle ve posta kodunu yaz
+              await postcodeInput.click({ timeout: 5000 }).catch(() => {});
+              await postcodeInput.fill('');
+              await this.safeWait(page, 200);
+              await postcodeInput.type(postcode, { delay: 50 });
+              console.log(`✅ ${this._tag} Posta kodu girildi: ${postcode}`);
+              await this.safeWait(page, 500);
+              
+              // Apply butonuna tıkla
+              const applySelectors = [
+                'span#GLUXZipUpdate input.a-button-input',
+                '#GLUXZipUpdate input[type="submit"]',
+                '#GLUXZipUpdate .a-button-input',
+                'input[aria-labelledby="GLUXZipUpdate-announce"]'
+              ];
+              let applyBtn = null;
+              for (const sel of applySelectors) {
+                applyBtn = await page.$(sel).catch(() => null);
+                if (applyBtn) {
+                  console.log(`✅ ${this._tag} Apply butonu bulundu: ${sel}`);
+                  break;
+                }
+              }
+              
+              if (applyBtn) {
+                await applyBtn.click({ timeout: 10000 });
+                console.log(`✅ ${this._tag} Apply butonuna tıklandı`);
+                await this.safeWait(page, 3000);
+                
+                // Sayfa yenilenmesini bekle
+                try {
+                  await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
+                } catch (e) {}
+                await this.safeWait(page, 1000);
+                
+                // Popover kapandı mı kontrol et, kapanmadıysa Done/Close butonuna tıkla
+                try {
+                  const doneOrCloseBtn = await page.$('button[name="glowDoneButton"], .a-popover-footer button, #a-popover-3 button.a-button-close, button.a-modal-close').catch(() => null);
+                  if (doneOrCloseBtn) {
+                    const isVisible = await doneOrCloseBtn.isVisible().catch(() => false);
+                    if (isVisible) {
+                      await doneOrCloseBtn.click({ timeout: 5000 }).catch(() => {});
+                      console.log(`✅ ${this._tag} Done/Close butonuna tıklandı (posta kodu sonrası)`);
+                      await this.safeWait(page, 2000);
+                    }
+                  }
+                } catch (e) {}
+                
+                postcodeSetSuccessfully = true;
+                console.log(`✅ ${this._tag} Posta kodu ile adres ayarlandı: ${postcode}`);
+              } else {
+                console.warn(`⚠️ ${this._tag} Apply butonu bulunamadı`);
+              }
+            } else {
+              console.warn(`⚠️ ${this._tag} Posta kodu input alanı bulunamadı, ülke dropdown'u denenecek`);
+            }
+          } catch (postcodeError) {
+            console.warn(`⚠️ ${this._tag} Posta kodu ayarlama hatası: ${postcodeError.message}`);
+          }
+        }
+      }
+      
+      if (!postcodeSetSuccessfully) {
       // Ülke dropdown'unu bul ve aç
       console.log(`🎭 ${this._tag} Ülke dropdown'u aranıyor: ${targetCountryCode}...`);
       const dropdownSelectors = [
@@ -986,6 +1086,7 @@ class PlaywrightService {
       } catch (loadError) {
         console.warn(`⚠️ ${this._tag} Sayfa yükleme bekleme hatası: ${loadError.message}, devam ediliyor...`);
       }
+      } // end if (!postcodeSetSuccessfully) — ülke dropdown bloğu
       
       // KRİTİK: Para birimi seçimi customer-preferences sayfasından yapılmalı (aksi halde yanlış fiyatlar çekilebiliyor)
       try {
@@ -1047,7 +1148,30 @@ class PlaywrightService {
           : false;
 
         if (!isAlreadyCorrect) {
-          // Dropdown'u aç
+          // KRİTİK: Önce radio button ile para birimi seçmeyi dene (amazon.co.uk vb. siteler radio button kullanıyor)
+          let currencySetViaRadio = false;
+          try {
+            const radioLabels = await page.$$('#icp-popular-currencies-section label, #icp-currency-settings label, #icp-popular-currencies-section div.a-radio label');
+            console.log(`🔍 ${this._tag} Radio button ile para birimi aranıyor: ${radioLabels.length} label bulundu`);
+            for (const label of radioLabels) {
+              const text = await label.textContent().catch(() => '');
+              console.log(`🔍 ${this._tag} Radio label: "${text.trim().substring(0, 60)}"`);
+              if (text.toUpperCase().includes(targetCurrency.toUpperCase())) {
+                await label.scrollIntoViewIfNeeded().catch(() => {});
+                await this.safeWait(page, 300);
+                await label.click({ timeout: 10000 });
+                currencySetViaRadio = true;
+                console.log(`✅ ${this._tag} Radio button ile para birimi seçildi: ${text.trim()}`);
+                await this.safeWait(page, 1000);
+                break;
+              }
+            }
+          } catch (radioError) {
+            console.warn(`⚠️ ${this._tag} Radio button para birimi hatası: ${radioError.message}`);
+          }
+          
+          if (!currencySetViaRadio) {
+          // Dropdown'u aç (radio button bulunamadıysa)
           console.log(`💵 ${this._tag} Para birimi dropdown açılıyor...`);
           const dropdownOpenSelectors = [
             '#icp-currency-dropdown-selected-item-prompt',
@@ -1066,51 +1190,54 @@ class PlaywrightService {
             }
           }
           if (!dropdownOpener) {
-            throw new Error('Currency dropdown opener bulunamadı');
+            console.warn(`⚠️ ${this._tag} Currency dropdown opener bulunamadı, devam ediliyor...`);
           }
 
-          await dropdownOpener.scrollIntoViewIfNeeded().catch(() => {});
-          await this.safeWait(page, 300);
-          await dropdownOpener.click({ timeout: 30000 }).catch(async (e) => {
-            console.warn(`⚠️ ${this._tag} Currency dropdown normal click başarısız, force click deneniyor: ${e.message}`);
-            await dropdownOpener.click({ force: true, timeout: 30000 });
-          });
-          await this.safeWait(page, 1000);
+          if (dropdownOpener) {
+            await dropdownOpener.scrollIntoViewIfNeeded().catch(() => {});
+            await this.safeWait(page, 300);
+            await dropdownOpener.click({ timeout: 30000 }).catch(async (e) => {
+              console.warn(`⚠️ ${this._tag} Currency dropdown normal click başarısız, force click deneniyor: ${e.message}`);
+              await dropdownOpener.click({ force: true, timeout: 30000 });
+            });
+            await this.safeWait(page, 1000);
 
-          // Popover içinden para birimini seç
-          console.log(`💵 ${this._tag} Para birimi seçeneği aranıyor: ${targetCurrency}...`);
-          const optionSelectors = [
-            `div.a-popover-wrapper li#${targetCurrency} a`,
-            `div.a-popover-wrapper li#${targetCurrency} span`,
-            `#a-popover-1 li#${targetCurrency} a`,
-            `#a-popover-1 li#${targetCurrency} span`,
-            `div.a-popover-wrapper a:has-text("${targetCurrency}")`,
-            `#a-popover-1 a:has-text("${targetCurrency}")`
-          ];
-          let optionEl = null;
-          for (const selector of optionSelectors) {
-            try {
-              optionEl = await page.waitForSelector(selector, { timeout: 15000, state: 'visible' });
-              if (optionEl) {
-                console.log(`✅ ${this._tag} Para birimi seçeneği bulundu: ${selector}`);
-                break;
+            // Popover içinden para birimini seç
+            console.log(`💵 ${this._tag} Para birimi seçeneği aranıyor: ${targetCurrency}...`);
+            const optionSelectors = [
+              `div.a-popover-wrapper li#${targetCurrency} a`,
+              `div.a-popover-wrapper li#${targetCurrency} span`,
+              `#a-popover-1 li#${targetCurrency} a`,
+              `#a-popover-1 li#${targetCurrency} span`,
+              `div.a-popover-wrapper a:has-text("${targetCurrency}")`,
+              `#a-popover-1 a:has-text("${targetCurrency}")`
+            ];
+            let optionEl = null;
+            for (const selector of optionSelectors) {
+              try {
+                optionEl = await page.waitForSelector(selector, { timeout: 15000, state: 'visible' });
+                if (optionEl) {
+                  console.log(`✅ ${this._tag} Para birimi seçeneği bulundu: ${selector}`);
+                  break;
+                }
+              } catch (e) {
+                continue;
               }
-            } catch (e) {
-              continue;
             }
-          }
-          if (!optionEl) {
-            throw new Error(`Para birimi seçeneği bulunamadı: ${targetCurrency}`);
-          }
-
-          await optionEl.scrollIntoViewIfNeeded().catch(() => {});
-          await this.safeWait(page, 300);
-          await optionEl.click({ timeout: 30000 }).catch(async (e) => {
-            console.warn(`⚠️ ${this._tag} Currency option normal click başarısız, force click deneniyor: ${e.message}`);
-            await optionEl.click({ force: true, timeout: 30000 });
-          });
-          await this.safeWait(page, 1200);
-          console.log(`✅ ${this._tag} Para birimi seçildi: ${targetCurrency}`);
+            if (optionEl) {
+              await optionEl.scrollIntoViewIfNeeded().catch(() => {});
+              await this.safeWait(page, 300);
+              await optionEl.click({ timeout: 30000 }).catch(async (e) => {
+                console.warn(`⚠️ ${this._tag} Currency option normal click başarısız, force click deneniyor: ${e.message}`);
+                await optionEl.click({ force: true, timeout: 30000 });
+              });
+              await this.safeWait(page, 1200);
+              console.log(`✅ ${this._tag} Para birimi dropdown'dan seçildi: ${targetCurrency}`);
+            } else {
+              console.warn(`⚠️ ${this._tag} Para birimi seçeneği bulunamadı: ${targetCurrency}`);
+            }
+          } // end if (dropdownOpener)
+          } // end if (!currencySetViaRadio)
         } else {
           console.log(`✅ ${this._tag} Para birimi zaten doğru: ${targetCurrency}`);
         }
@@ -3069,12 +3196,26 @@ class PlaywrightService {
         
         // Adım 3: Glow API ile teslimat ülkesini değiştir + popup fallback
         console.log(`🌍 ${this._tag} Glow API + popup ile ${amazonCountryCode} seçiliyor...`);
-        const glowResult = await page.evaluate(async (countryCode) => {
+        // KRİTİK: Marketplace'e göre posta kodu — Glow API'ye zip code gönder
+        const marketplacePostcodesForGlow = {
+          'amazon.co.uk': 'N1 3QP',
+          'amazon.de': '10115',
+          'amazon.fr': '75001',
+          'amazon.it': '00100',
+          'amazon.es': '28001',
+          'amazon.co.jp': '100-0001',
+          'amazon.com': '10001',
+          'amazon.ca': 'M5V 2T6'
+        };
+        const postcodeForGlow = marketplacePostcodesForGlow[sourceMarketplace] || '';
+        console.log(`📮 ${this._tag} Glow API postcode: "${postcodeForGlow}" (${sourceMarketplace})`);
+        
+        const glowResult = await page.evaluate(async ({ countryCode, zipCode }) => {
           try {
             const formData = new URLSearchParams({
               deviceType: 'web', pageType: 'Detail', storeContext: 'generic',
               actionSource: 'glow', almBrandId: 'undefined',
-              zipCode: '', countryCode: countryCode, city: '', district: ''
+              zipCode: zipCode, countryCode: countryCode, city: '', district: ''
             });
             const resp = await fetch('/portal-migration/hz/glow/address-change?actionSource=glow', {
               method: 'POST',
@@ -3083,7 +3224,7 @@ class PlaywrightService {
             });
             return { status: resp.status, ok: resp.ok };
           } catch (e) { return { error: e.message }; }
-        }, amazonCountryCode).catch(e => ({ error: e.message }));
+        }, { countryCode: amazonCountryCode, zipCode: postcodeForGlow }).catch(e => ({ error: e.message }));
         console.log(`📍 ${this._tag} Glow API: ${JSON.stringify(glowResult)}`);
         
         // Glow API sonrası sayfayı yenile (cookie'ler güncellendi)
