@@ -3238,9 +3238,26 @@ class PlaywrightService {
         }).catch(() => '');
         console.log(`📍 ${this._tag} Teslimat: "${deliveryCheck}"`);
         
-        // UK seçili değilse popup ile dene
-        if (!deliveryCheck.toLowerCase().includes('united kingdom') && !deliveryCheck.toLowerCase().includes('uk') && !deliveryCheck.toLowerCase().includes(amazonCountryCode.toLowerCase())) {
-          console.log(`⚠️ ${this._tag} UK seçili değil ("${deliveryCheck}"), popup ile deneniyor...`);
+        // KRİTİK: Teslimat ülkesi doğru mu kontrol et
+        // "London N1 3QP" gibi UK adres bilgileri de kabul edilmeli
+        const deliveryLower = deliveryCheck.toLowerCase();
+        const isDeliveryCorrect = deliveryLower.includes('united kingdom') || 
+          deliveryLower.includes('uk') || 
+          deliveryLower.includes(amazonCountryCode.toLowerCase()) ||
+          deliveryLower.includes('london') ||
+          deliveryLower.includes('england') ||
+          deliveryLower.includes('scotland') ||
+          deliveryLower.includes('wales') ||
+          deliveryLower.includes('berlin') ||
+          deliveryLower.includes('paris') ||
+          deliveryLower.includes('madrid') ||
+          deliveryLower.includes('roma') ||
+          deliveryLower.includes('tokyo') ||
+          /[a-z]{1,2}\d{1,2}\s*\d[a-z]{2}/i.test(deliveryCheck) || // UK postcode pattern (N1 3QP, SW1A 1AA vb.)
+          /\d{5}/.test(deliveryCheck); // Kıta Avrupası/ABD/JP posta kodu pattern
+        
+        if (!isDeliveryCorrect) {
+          console.log(`⚠️ ${this._tag} Hedef ülke seçili değil ("${deliveryCheck}"), popup ile deneniyor...`);
           const popupResult = await this.selectCountryAndCurrency(page, targetCountry, sourceMarketplace, productUrl);
           if (popupResult.success) {
             console.log(`✅ ${this._tag} Popup ile UK seçildi`);
@@ -3769,15 +3786,63 @@ class PlaywrightService {
       } catch (_) {}
       
       // KRİTİK: #aod-filter elementinde "no other sellers matching" mesajı var mı kontrol et
-      // Amazon "Currently unavailable" ürünlerde bu mesajı gösteriyor — satıcı yok demek
+      // DİKKAT: Bu mesaj "buybox dışında başka satıcı yok" anlamına gelir!
+      // Pinned offer (buybox) hala geçerli bir satıcı olabilir — sadece "other sellers" yok
       let hasNoSellers = false;
+      let hasNoOtherSellers = false;
       try {
         const aodFilterEl = await page.$('#aod-filter').catch(() => null);
         if (aodFilterEl) {
           const filterText = await aodFilterEl.evaluate((el) => el.textContent || '').catch(() => '');
           if (/no\s+other\s+sellers\s+matching/i.test(filterText) || /currently.*unavailable/i.test(filterText)) {
-            hasNoSellers = true;
-            console.log(`🚫 ${this._tag} #aod-filter: "No other sellers matching" mesajı tespit edildi — SIFIR satıcı`);
+            hasNoOtherSellers = true;
+            console.log(`ℹ️ ${this._tag} #aod-filter: "No other sellers matching" mesajı tespit edildi`);
+            
+            // KRİTİK: Pinned offer'da geçerli bir satıcı var mı kontrol et
+            // Eğer pinned offer varsa ve fiyat/satıcı bilgisi içeriyorsa, buybox satıcısı vardır
+            if (!hasNoBuybox) {
+              try {
+                const pinnedOfferEl2 = await page.$('#aod-pinned-offer').catch(() => null);
+                if (pinnedOfferEl2) {
+                  const pinnedContent = await pinnedOfferEl2.evaluate((el) => {
+                    const text = (el.textContent || '').trim();
+                    // Fiyat var mı kontrol et (£, $, € sembolü)
+                    const hasPrice = /[\$£€]\s*[\d,]+\.?\d*/.test(text);
+                    // "Sold by" veya "Dispatches from" var mı
+                    const hasSeller = /sold\s+by/i.test(text) || /dispatches\s+from/i.test(text) || /ships\s+from/i.test(text);
+                    // "No featured offers available" değilse ve fiyat varsa geçerli
+                    const isNoFeatured = /no\s+featured\s+offers\s+available/i.test(text);
+                    // "Currently unavailable" kontrolü
+                    const isUnavailable = /currently\s*unavailable/i.test(text) && /we\s+don.*t\s+know\s+when/i.test(text);
+                    return { hasPrice, hasSeller, isNoFeatured, isUnavailable, textLen: text.length };
+                  }).catch(() => ({ hasPrice: false, hasSeller: false, isNoFeatured: true, isUnavailable: false, textLen: 0 }));
+                  
+                  console.log(`🔍 ${this._tag} Pinned offer kontrolü: hasPrice=${pinnedContent.hasPrice}, hasSeller=${pinnedContent.hasSeller}, isNoFeatured=${pinnedContent.isNoFeatured}, isUnavailable=${pinnedContent.isUnavailable}, textLen=${pinnedContent.textLen}`);
+                  
+                  if (pinnedContent.hasPrice && !pinnedContent.isNoFeatured && !pinnedContent.isUnavailable) {
+                    // Buybox satıcısı VAR — "no other sellers" sadece ek satıcı olmadığını belirtir
+                    hasNoSellers = false;
+                    console.log(`✅ ${this._tag} Pinned offer'da geçerli buybox satıcısı VAR — hasNoSellers=false (sadece diğer satıcılar yok)`);
+                  } else if (pinnedContent.isUnavailable || pinnedContent.isNoFeatured) {
+                    hasNoSellers = true;
+                    console.log(`🚫 ${this._tag} Pinned offer geçersiz (unavailable/no featured) VE diğer satıcı yok — SIFIR satıcı`);
+                  } else {
+                    hasNoSellers = true;
+                    console.log(`🚫 ${this._tag} Pinned offer'da fiyat bulunamadı VE diğer satıcı yok — SIFIR satıcı`);
+                  }
+                } else {
+                  hasNoSellers = true;
+                  console.log(`🚫 ${this._tag} Pinned offer elementi bulunamadı VE diğer satıcı yok — SIFIR satıcı`);
+                }
+              } catch (pinnedCheckErr) {
+                hasNoSellers = true;
+                console.warn(`⚠️ ${this._tag} Pinned offer kontrolü hatası: ${pinnedCheckErr.message} — SIFIR satıcı varsayılıyor`);
+              }
+            } else {
+              // hasNoBuybox=true VE "no other sellers" → gerçekten hiç satıcı yok
+              hasNoSellers = true;
+              console.log(`🚫 ${this._tag} Buybox yok (No featured offers) VE diğer satıcı yok — SIFIR satıcı`);
+            }
           }
         }
       } catch (_) {}
