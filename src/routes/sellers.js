@@ -329,4 +329,127 @@ router.get('/:asin', async (req, res, next) => {
   }
 });
 
+/**
+ * POST /api/sellers/check-pages
+ * Hafif sayfa kontrolü — Playwright KULLANMADAN HTTP ile ürün sayfalarının varlığını kontrol eder.
+ * pageNotFound olan ASIN'leri döndürür. Envanter sayfası yüklenirken arka planda çağrılır.
+ * 
+ * Body: { asins: ["B00...", "B01..."], targetMarketplace: "amazon.co.uk" }
+ * Response: { ok: true, results: { "B00...": { exists: false, pageNotFound: true }, ... } }
+ */
+router.post('/check-pages', async (req, res) => {
+  try {
+    const { asins, targetMarketplace = 'amazon.co.uk' } = req.body;
+    
+    if (!asins || !Array.isArray(asins) || asins.length === 0) {
+      return res.status(400).json({ ok: false, error: 'asins array gerekli' });
+    }
+    
+    // Max 50 ASIN per request
+    const asinList = asins.slice(0, 50);
+    console.log(`🔍 [Check Pages] ${asinList.length} ASIN kontrol ediliyor: ${targetMarketplace}`);
+    
+    const marketplaceDomains = {
+      'amazon.com': 'https://www.amazon.com',
+      'amazon.co.uk': 'https://www.amazon.co.uk',
+      'amazon.de': 'https://www.amazon.de',
+      'amazon.fr': 'https://www.amazon.fr',
+      'amazon.it': 'https://www.amazon.it',
+      'amazon.es': 'https://www.amazon.es',
+      'amazon.co.jp': 'https://www.amazon.co.jp',
+      'amazon.ca': 'https://www.amazon.ca'
+    };
+    
+    const baseUrl = marketplaceDomains[targetMarketplace] || `https://www.${targetMarketplace}`;
+    const results = {};
+    
+    // Her ASIN için paralel HTTP kontrolü (5'li gruplar halinde)
+    const batchSize = 5;
+    for (let i = 0; i < asinList.length; i += batchSize) {
+      const batch = asinList.slice(i, i + batchSize);
+      
+      const promises = batch.map(async (asin) => {
+        try {
+          const url = `${baseUrl}/dp/${asin}`;
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 10000); // 10s timeout
+          
+          const response = await fetch(url, {
+            method: 'GET',
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+              'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+              'Accept-Language': 'en-US,en;q=0.9',
+              'Accept-Encoding': 'gzip, deflate, br'
+            },
+            redirect: 'follow',
+            signal: controller.signal
+          });
+          clearTimeout(timeoutId);
+          
+          const statusCode = response.status;
+          
+          // 404 veya redirect to dog page = page not found
+          if (statusCode === 404) {
+            results[asin] = { exists: false, pageNotFound: true, statusCode };
+            console.log(`🚫 [Check Pages] ${asin}: 404 — Page Not Found`);
+            return;
+          }
+          
+          // HTML'den "Page Not Found" veya "dog page" kontrolü
+          if (statusCode === 200) {
+            const html = await response.text();
+            const isPageNotFound = html.includes('Page Not Found') || 
+                                   html.includes('Looking for something?') ||
+                                   html.includes("Sorry, we couldn't find that page") ||
+                                   html.includes('The Web address you entered is not a functioning page') ||
+                                   (html.includes('a]o[g') && html.includes('Looking for something?')); // Amazon dog page obfuscated
+            
+            // "Currently unavailable" kontrolü
+            const isUnavailable = html.includes('Currently unavailable') && 
+                                  html.includes("We don't know when or if this item will be back in stock");
+            
+            if (isPageNotFound) {
+              results[asin] = { exists: false, pageNotFound: true, statusCode };
+              console.log(`🚫 [Check Pages] ${asin}: Page Not Found (HTML)`);
+            } else if (isUnavailable) {
+              results[asin] = { exists: true, pageNotFound: false, unavailable: true, statusCode };
+              console.log(`⚠️ [Check Pages] ${asin}: Currently Unavailable`);
+            } else {
+              results[asin] = { exists: true, pageNotFound: false, statusCode };
+            }
+          } else {
+            results[asin] = { exists: true, pageNotFound: false, statusCode, note: 'unknown status' };
+          }
+        } catch (err) {
+          results[asin] = { exists: true, pageNotFound: false, error: err.message };
+          console.warn(`⚠️ [Check Pages] ${asin}: Kontrol hatası: ${err.message}`);
+        }
+      });
+      
+      await Promise.all(promises);
+    }
+    
+    const pageNotFoundCount = Object.values(results).filter(r => r.pageNotFound).length;
+    const unavailableCount = Object.values(results).filter(r => r.unavailable).length;
+    
+    console.log(`✅ [Check Pages] ${asinList.length} ASIN kontrol edildi: ${pageNotFoundCount} pageNotFound, ${unavailableCount} unavailable`);
+    
+    return res.json({
+      ok: true,
+      targetMarketplace,
+      results,
+      summary: {
+        total: asinList.length,
+        exists: asinList.length - pageNotFoundCount,
+        pageNotFound: pageNotFoundCount,
+        unavailable: unavailableCount
+      }
+    });
+  } catch (error) {
+    console.error(`❌ [Check Pages] Hata:`, error.message);
+    return res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
 module.exports = router;
