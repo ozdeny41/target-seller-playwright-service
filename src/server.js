@@ -4,7 +4,7 @@ const dotenv = require('dotenv');
 
 dotenv.config();
 
-// KRITIK: Unhandled rejection/exception - process crash onle (Railway restart dongusu)
+// KRİTİK: Unhandled rejection/exception — process crash önle (Railway restart döngüsü)
 process.on('unhandledRejection', (reason, promise) => {
   console.error('❌ [Target Seller Playwright] Unhandled Rejection:', reason);
   if (reason && reason.stack) console.error(reason.stack);
@@ -12,9 +12,10 @@ process.on('unhandledRejection', (reason, promise) => {
 process.on('uncaughtException', (err) => {
   console.error('❌ [Target Seller Playwright] Uncaught Exception:', err.message);
   if (err.stack) console.error(err.stack);
+  // process.exit(1) YAPMA — logla ve devam et, aksi halde Railway sürekli restart eder
 });
 
-// Browser yukleme
+// Browser yükleme (vixify-playwright-service-batch ile aynı mantık — bir kere açık, pool kullanılır)
 let browserInstallationInProgress = false;
 let browserInstallationComplete = false;
 let browserInstallationPromise = null;
@@ -51,7 +52,7 @@ function findChromiumExecutable() {
 const runBrowserCheck = () => {
   browserInstallationPromise = (async () => {
     try {
-      console.log('🔧 [Target Seller Playwright] Tarayici kontrolu baslatiliyor...');
+      console.log('🔧 [Target Seller Playwright] Tarayıcı kontrolü başlatılıyor...');
       const fs = require('fs');
       const path = require('path');
       const execSync = require('child_process').execSync;
@@ -61,7 +62,7 @@ const runBrowserCheck = () => {
         browserInstallationComplete = true;
         return;
       }
-      console.log('⚠️ [Target Seller Playwright] Chromium bulunamadi, yukleniyor...');
+      console.log('⚠️ [Target Seller Playwright] Chromium bulunamadı, yükleniyor...');
       browserInstallationInProgress = true;
       try {
         execSync('npx playwright install chromium --with-deps', { stdio: 'inherit', timeout: 300000 });
@@ -75,7 +76,7 @@ const runBrowserCheck = () => {
         browserInstallationInProgress = false;
       }
     } catch (e) {
-      console.error('❌ [Target Seller Playwright] Tarayici kontrolu hatasi:', e.message);
+      console.error('❌ [Target Seller Playwright] Tarayıcı kontrolü hatası:', e.message);
       browserInstallationInProgress = false;
     }
   })();
@@ -93,16 +94,17 @@ browserInstallationPromise && browserInstallationPromise.then(() => {
 const app = express();
 const PORT = process.env.PORT || 3003;
 
-// CORS ayarlari
+// CORS ayarları - Tüm origin'lere izin ver
 const corsOptions = {
   origin: '*',
   credentials: false,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin'],
   exposedHeaders: ['Content-Type', 'Authorization'],
-  maxAge: 86400
+  maxAge: 86400 // 24 saat preflight cache
 };
 
+// OPTIONS preflight request'leri için manuel handling
 app.options('*', (req, res) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH');
@@ -111,6 +113,7 @@ app.options('*', (req, res) => {
   res.sendStatus(200);
 });
 
+// Middleware
 app.use(cors(corsOptions));
 app.use(express.json());
 
@@ -123,10 +126,11 @@ app.get('/health', (req, res) => {
   });
 });
 
-// Target Seller DB health check
+// Target Seller DB health check + test write
 app.get('/seller-db-health', async (req, res) => {
   try {
-    const sellerDbService = require('./services/sellerDbService');
+    const targetSellerDbService = require('./services/targetSellerDbService');
+    // Direkt pg ile test et
     const dbUrl = process.env.SELLER_DATABASE_URL;
     const isInternal = dbUrl && dbUrl.includes('.railway.internal');
     let directError = null;
@@ -141,15 +145,18 @@ app.get('/seller-db-health', async (req, res) => {
     if (directError) {
       return res.json({ ok: false, error: directError, dbUrl: dbUrl ? dbUrl.replace(/\/\/[^@]+@/, '//***@') : 'NOT SET', isInternal });
     }
+    const connected = true;
     // Test write
-    await sellerDbService.saveSellers('TEST-HEALTH', 'test', null, [{ sellerName: 'HealthTest', price: 1, condition: 'New' }]);
+    await targetSellerDbService.saveSellers('TEST-HEALTH', 'test', null, [{ sellerName: 'HealthTest', price: 1, condition: 'New' }]);
+    // Check
     const { Pool } = require('pg');
     const pool = new Pool({ connectionString: process.env.SELLER_DATABASE_URL, ssl: process.env.SELLER_DATABASE_URL.includes('.railway.internal') ? false : { rejectUnauthorized: false } });
     const result = await pool.query('SELECT count(*) as cnt FROM "TargetSeller" WHERE asin = $1', ['TEST-HEALTH']);
     const count = parseInt(result.rows[0].cnt);
+    // Cleanup
     await pool.query('DELETE FROM "TargetSeller" WHERE asin = $1', ['TEST-HEALTH']);
     await pool.end();
-    return res.json({ ok: count > 0, count, message: count > 0 ? 'DB yazma testi basarili' : 'Yazma basarisiz' });
+    return res.json({ ok: count > 0, count, message: count > 0 ? 'Target Seller DB yazma testi başarılı' : 'Yazma başarısız' });
   } catch (e) {
     return res.json({ ok: false, error: e.message, stack: e.stack?.substring(0, 300) });
   }
@@ -160,7 +167,7 @@ app.use('/api', require('./routes'));
 
 // Error handling
 app.use((err, req, res, next) => {
-  console.error('❌ [Target Seller Playwright] Error:', err);
+  console.error('❌ [Target Seller Playwright Service] Error:', err);
   res.status(err.status || 500).json({
     ok: false,
     error: err.message || 'Internal server error'
@@ -171,22 +178,23 @@ app.use((err, req, res, next) => {
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 [Target Seller Playwright] Server running on port ${PORT}`);
   console.log(`📡 [Target Seller Playwright] Health check: http://0.0.0.0:${PORT}/health`);
-  console.log(`🎯 [Target Seller Playwright] Bu servis HEDEF PAZAR (navbar secili ulke) satici bilgilerini ceker`);
-  console.log(`🔗 [Target Seller Playwright] SELLER_DATABASE_URL: ${process.env.SELLER_DATABASE_URL ? '✅ TANIMLI' : '❌ TANIMLI DEGIL'}`);
+  console.log(`📡 [Target Seller Playwright] Hedef pazar satıcı bilgileri çekme servisi`);
+  console.log(`🔗 [Target Seller Playwright] SELLER_DATABASE_URL: ${process.env.SELLER_DATABASE_URL ? '✅ TANIMLI' : '❌ TANIMLI DEĞİL'}`);
   
+  // Target-Seller-Postgresql bağlantı testi
   setImmediate(async () => {
     try {
-      const sellerDbService = require('./services/sellerDbService');
-      await sellerDbService.testConnection();
+      const targetSellerDbService = require('./services/targetSellerDbService');
+      await targetSellerDbService.testConnection();
     } catch (e) {
-      console.warn('⚠️ [Target Seller Playwright] DB baglanti testi hatasi:', e.message);
+      console.warn('⚠️ [Target Seller Playwright] DB bağlantı testi hatası:', e.message);
     }
     
     try {
       const playwrightService = require('./services/playwrightService');
       if (playwrightService && typeof playwrightService.getBrowser === 'function') {
-        console.log(`🔥 [Target Seller Playwright] Tarayici warmup baslatildi...`);
-        playwrightService.getBrowser().then(() => console.log(`✅ [Target Seller Playwright] Tarayici warmup tamamlandi`)).catch(e => console.warn('⚠️ [Target Seller Playwright] Warmup hatasi:', e.message));
+        console.log(`🔥 [Target Seller Playwright] Tarayıcı warmup başlatıldı...`);
+        playwrightService.getBrowser().then(() => console.log(`✅ [Target Seller Playwright] Tarayıcı warmup tamamlandı`)).catch(e => console.warn('⚠️ [Target Seller Playwright] Warmup hatası:', e.message));
       }
     } catch (e) { /* ignore */ }
   });

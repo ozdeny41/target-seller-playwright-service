@@ -1,10 +1,12 @@
 /**
- * sellerDbService.js (TARGET SELLER)
- * Target-Seller-Postgresql'e dogrudan kayit — target seller servisi veri cektigi anda DB'ye yazar.
- * Backend'e bagimli degil, HTTP timeout sorunlarindan etkilenmez.
+ * targetSellerDbService.js
+ * Target-Seller-Postgresql'e doğrudan kayıt — target seller servisi veri çektiği anda DB'ye yazar.
+ * Backend'e bağımlı değil, HTTP timeout sorunlarından etkilenmez.
  * 
- * FARK: "Seller" tablosu yerine "TargetSeller" tablosu kullanilir.
- * FARK: sourceMarketplace yerine targetMarketplace alani kullanilir.
+ * FARK: Mevcut sellerDbService.js'den farkı:
+ * - Tablo adı: "TargetSeller" (mevcut: "Seller")
+ * - Alan adı: "targetMarketplace" (mevcut: "sourceMarketplace")
+ * - marketplace varsayılan: 'target' (mevcut: 'source')
  */
 const { Pool } = require('pg');
 
@@ -15,7 +17,7 @@ function getPool() {
 
   const dbUrl = process.env.SELLER_DATABASE_URL;
   if (!dbUrl) {
-    console.warn('⚠️ [TargetSellerDB] SELLER_DATABASE_URL tanimli degil — DB kayit devre disi');
+    console.warn('⚠️ [TargetSellerDB] SELLER_DATABASE_URL tanımlı değil — DB kayıt devre dışı');
     return null;
   }
 
@@ -31,23 +33,23 @@ function getPool() {
 
     pool.on('error', (err) => {
       console.error('❌ [TargetSellerDB] Pool error:', err.message);
-      pool = null;
+      pool = null; // Reconnect on next call
     });
 
-    console.log(`✅ [TargetSellerDB] PostgreSQL pool olusturuldu (${isInternal ? 'internal' : 'public'})`);
+    console.log(`✅ [TargetSellerDB] PostgreSQL pool oluşturuldu (${isInternal ? 'internal' : 'public'})`);
     return pool;
   } catch (e) {
-    console.error('❌ [TargetSellerDB] Pool olusturma hatasi:', e.message);
+    console.error('❌ [TargetSellerDB] Pool oluşturma hatası:', e.message);
     return null;
   }
 }
 
 /**
- * Target Seller verilerini Target-Seller-Postgresql'e kaydet.
- * Once ASIN+targetMarketplace icin eski kayitlari sil, sonra yenilerini ekle.
+ * Target seller verilerini Target-Seller-Postgresql'e kaydet.
+ * Önce ASIN+targetMarketplace için eski kayıtları sil, sonra yenilerini ekle.
  *
  * @param {string} asin
- * @param {string} targetMarketplace - Hedef pazar (navbar secili ulke: amazon.co.uk, amazon.de, vb.)
+ * @param {string} targetMarketplace - Hedef pazar (amazon.co.uk, amazon.de, vb.)
  * @param {string|null} targetCountry
  * @param {Array} sellers - Playwright'tan gelen seller listesi
  */
@@ -55,24 +57,24 @@ async function saveSellers(asin, targetMarketplace, targetCountry, sellers) {
   const db = getPool();
   if (!db) return;
   if (!sellers || sellers.length === 0) {
-    console.log(`⚠️ [TargetSellerDB] ${asin} icin seller yok, kayit atlandi`);
+    console.log(`⚠️ [TargetSellerDB] ${asin} için seller yok, kayıt atlandı`);
     return;
   }
 
   const client = await db.connect().catch(e => {
-    console.error(`❌ [TargetSellerDB] ${asin} baglanti hatasi:`, e.message);
+    console.error(`❌ [TargetSellerDB] ${asin} bağlantı hatası:`, e.message);
     return null;
   });
   if (!client) return;
 
   try {
-    // Eski kayitlari sil
+    // Eski kayıtları sil (FARK: "TargetSeller" tablosu, "targetMarketplace" alanı)
     await client.query(
       `DELETE FROM "TargetSeller" WHERE asin = $1 AND "targetMarketplace" = $2`,
       [asin, targetMarketplace || 'amazon.com']
     );
 
-    // Yeni kayitlari ekle
+    // Yeni kayıtları ekle
     const insertQuery = `
       INSERT INTO "TargetSeller" (
         id, "inventoryItemId", asin, "userId", "targetMarketplace", "targetMarket",
@@ -95,36 +97,37 @@ async function saveSellers(asin, targetMarketplace, targetCountry, sellers) {
 
     for (let i = 0; i < sellers.length; i++) {
       const s = sellers[i];
+      // cuid benzeri unique ID oluştur
       const id = `tsel_${Date.now()}_${Math.random().toString(36).substring(2, 9)}_${i}`;
 
       const values = [
         id,                                                      // id
-        'auto',                                                  // inventoryItemId
+        'auto',                                                  // inventoryItemId (backend dolduracak)
         asin,                                                    // asin
-        'system',                                                // userId
-        targetMarketplace || 'amazon.com',                       // targetMarketplace
+        'system',                                                // userId (backend dolduracak)
+        targetMarketplace || 'amazon.com',                       // targetMarketplace (FARK: sourceMarketplace değil)
         targetCountry || null,                                   // targetMarket
         s.sellerName || s.soldBy || null,                        // sellerName
         s.soldBy || s.sellerName || null,                        // soldBy
         s.sellerId || null,                                      // sellerId
-        s.sellerRating != null ? parseFloat(s.sellerRating) || null : null,
-        s.sellerRatingCount != null ? parseInt(s.sellerRatingCount) || null : null,
-        s.positivePercentage != null ? parseFloat(s.positivePercentage) || null : null,
+        s.sellerRating != null ? parseFloat(s.sellerRating) || null : null,    // sellerRating
+        s.sellerRatingCount != null ? parseInt(s.sellerRatingCount) || null : null, // sellerRatingCount
+        s.positivePercentage != null ? parseFloat(s.positivePercentage) || null : null, // positivePercentage
         s.condition || null,                                     // condition
         !!s.isNew,                                               // isNew
         !!s.isUsed,                                              // isUsed
-        s.price != null ? parseFloat(s.price) || null : null,
-        s.priceText || null,
-        s.primePrice != null ? parseFloat(s.primePrice) || null : null,
-        s.primePriceText || null,
-        s.shipsFrom || null,
-        s.shippingPrice != null ? parseFloat(s.shippingPrice) || null : null,
-        s.standardShippingPrice != null ? parseFloat(s.standardShippingPrice) || null : null,
-        s.expressShippingPrice != null ? parseFloat(s.expressShippingPrice) || null : null,
-        s.deliveryDate || s.standardDeliveryDate || null,
-        s.standardDeliveryDate || null,
-        s.expressDeliveryDate || null,
-        s.marketplace || 'target',                               // marketplace = 'target'
+        s.price != null ? parseFloat(s.price) || null : null,   // price
+        s.priceText || null,                                     // priceText
+        s.primePrice != null ? parseFloat(s.primePrice) || null : null,   // primePrice
+        s.primePriceText || null,                                // primePriceText
+        s.shipsFrom || null,                                     // shipsFrom
+        s.shippingPrice != null ? parseFloat(s.shippingPrice) || null : null, // shippingPrice
+        s.standardShippingPrice != null ? parseFloat(s.standardShippingPrice) || null : null, // standardShippingPrice
+        s.expressShippingPrice != null ? parseFloat(s.expressShippingPrice) || null : null,   // expressShippingPrice
+        s.deliveryDate || s.standardDeliveryDate || null,        // deliveryDate
+        s.standardDeliveryDate || null,                          // standardDeliveryDate
+        s.expressDeliveryDate || null,                           // expressDeliveryDate
+        s.marketplace || 'target',                               // marketplace (FARK: varsayılan 'target')
         i,                                                       // offerIndex
         now,                                                     // fetchedAt
         now,                                                     // createdAt
@@ -135,30 +138,30 @@ async function saveSellers(asin, targetMarketplace, targetCountry, sellers) {
         await client.query(insertQuery, values);
         saved++;
       } catch (insertErr) {
-        console.error(`❌ [TargetSellerDB] ${asin} seller #${i} insert hatasi:`, insertErr.message);
+        console.error(`❌ [TargetSellerDB] ${asin} seller #${i} insert hatası:`, insertErr.message);
       }
     }
 
     console.log(`✅ [TargetSellerDB] ${asin} → ${saved}/${sellers.length} seller Target-Seller-Postgresql'e kaydedildi`);
   } catch (e) {
-    console.error(`❌ [TargetSellerDB] ${asin} kayit hatasi:`, e.message);
+    console.error(`❌ [TargetSellerDB] ${asin} kayıt hatası:`, e.message);
   } finally {
     client.release();
   }
 }
 
 /**
- * DB baglanti testi
+ * DB bağlantı testi
  */
 async function testConnection() {
   const db = getPool();
   if (!db) return false;
   try {
     const result = await db.query('SELECT 1 as ok');
-    console.log('✅ [TargetSellerDB] Baglanti testi basarili');
+    console.log('✅ [TargetSellerDB] Bağlantı testi başarılı');
     return true;
   } catch (e) {
-    console.error('❌ [TargetSellerDB] Baglanti testi basarisiz:', e.message);
+    console.error('❌ [TargetSellerDB] Bağlantı testi başarısız:', e.message);
     return false;
   }
 }

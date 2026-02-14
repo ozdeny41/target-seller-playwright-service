@@ -1,9 +1,9 @@
 const express = require('express');
 const router = express.Router();
 const playwrightService = require('../services/playwrightService');
-const sellerDbService = require('../services/sellerDbService');
+const targetSellerDbService = require('../services/targetSellerDbService');
 
-// KRITIK: Queue mekanizmasi - EAGAIN hatalarini onlemek icin
+// KRİTİK: Queue mekanizması - EAGAIN hatalarını önlemek için
 class RequestQueue {
   constructor(maxConcurrent = 1) {
     this.maxConcurrent = maxConcurrent;
@@ -30,7 +30,7 @@ class RequestQueue {
     const eagainCooldownMs = 35000;
     if (this.lastEAGAINTime > 0 && timeSinceLastEAGAIN < eagainCooldownMs) {
       const waitTime = eagainCooldownMs - timeSinceLastEAGAIN;
-      console.log(`⏳ [Queue] Son EAGAIN hatasindan ${Math.round(timeSinceLastEAGAIN/1000)}s gecti, ${Math.round(waitTime/1000)}s daha bekleniyor...`);
+      console.log(`⏳ [Target Queue] Son EAGAIN hatasından ${Math.round(timeSinceLastEAGAIN/1000)}s geçti, ${Math.round(waitTime/1000)}s daha bekleniyor...`);
       setTimeout(() => this.process(), waitTime);
       return;
     }
@@ -44,7 +44,7 @@ class RequestQueue {
     try {
       const result = await fn();
       if (this.eagainCount > 0) {
-        console.log(`✅ [Queue] Basarili islem, EAGAIN sayaci sifirlaniyor`);
+        console.log(`✅ [Target Queue] Başarılı işlem, EAGAIN sayacı sıfırlanıyor`);
         this.eagainCount = 0;
       }
       resolve(result);
@@ -60,12 +60,12 @@ class RequestQueue {
         isEAGAINError = true;
         this.lastEAGAINTime = Date.now();
         this.eagainCount++;
-        console.error(`🚫 [Queue] EAGAIN hatasi (${this.eagainCount}. kez) - Railway kaynak limiti asildi.`);
+        console.error(`🚫 [Target Queue] EAGAIN hatası (${this.eagainCount}. kez) - Railway kaynak limiti aşıldı.`);
         
         const baseDelay = 35000;
         exponentialDelay = Math.min(baseDelay * Math.pow(2, this.eagainCount - 1), 120000);
         
-        console.error(`🚫 [Queue] ${Math.round(exponentialDelay/1000)} saniye bekleniyor (EAGAIN count: ${this.eagainCount})...`);
+        console.error(`🚫 [Target Queue] ${Math.round(exponentialDelay/1000)} saniye bekleniyor (EAGAIN count: ${this.eagainCount})...`);
         reject(error);
       } else {
         reject(error);
@@ -89,47 +89,50 @@ const requestQueue = new RequestQueue(1);
 
 /**
  * POST /api/sellers
- * HEDEF PAZAR satici bilgilerini Playwright ile cek
- * KRITIK FARK: targetMarketplace parametresi kullanilir (sourceMarketplace degil)
+ * Get TARGET marketplace seller information for a product using Playwright
+ * 
+ * FARK: Bu servis targetMarketplace parametresini alır (navbar'da seçili ülke).
+ * Mevcut seller-playwright-service ise sourceMarketplace kullanır.
  */
 router.post('/', async (req, res, next) => {
   try {
-    const { asin, asins, targetMarketplace = 'amazon.com', sourceMarketplace, targetCountry } = req.body;
+    // KRİTİK FARK: targetMarketplace parametresi kullanılıyor (sourceMarketplace DEĞİL)
+    const { asin, asins, targetMarketplace = 'amazon.com', targetCountry } = req.body;
     
-    // Scraping icin kullanilacak marketplace: targetMarketplace (navbar secili ulke)
-    const scrapingMarketplace = targetMarketplace || sourceMarketplace || 'amazon.com';
+    // Scraping için kullanılacak marketplace = targetMarketplace (navbar seçili ülke)
+    const scrapingMarketplace = targetMarketplace;
     
     const asinList = Array.isArray(asins)
       ? asins.map(a => String(a || '').trim()).filter(Boolean)
       : (asin ? [String(asin).trim()].filter(Boolean) : []);
     
-    console.log(`📥 [Target Seller] POST /api/sellers request alindi:`, {
+    console.log(`📥 [Target Seller Service] POST /api/sellers request alındı:`, {
       asin: asin,
       asinCount: asinList.length,
       targetMarketplace: targetMarketplace,
       scrapingMarketplace: scrapingMarketplace,
       targetCountry: targetCountry,
-      bodyKeys: Object.keys(req.body),
-      hasAsin: asinList.length > 0
+      bodyKeys: Object.keys(req.body)
     });
     
     if (asinList.length === 0) {
-      console.warn(`⚠️ [Target Seller] ASIN eksik, 400 donduruluyor`);
+      console.warn(`⚠️ [Target Seller Service] ASIN eksik, 400 döndürülüyor`);
       return res.status(400).json({ 
         ok: false, 
         error: 'ASIN is required' 
       });
     }
     
-    console.log(`📡 [Target Seller] Seller info request baslatiliyor: ${asinList[0]} (${asinList.length} ASIN) from ${scrapingMarketplace} (HEDEF PAZAR)`);
-    console.log(`📊 [Queue] Queue durumu: ${requestQueue.running}/${requestQueue.maxConcurrent} calisiyor, ${requestQueue.queue.length} bekliyor`);
+    console.log(`📡 [Target Seller Service] Seller info request başlatılıyor: ${asinList[0]} (${asinList.length} ASIN) from ${scrapingMarketplace} (hedef pazar)`);
+    console.log(`📊 [Target Queue] Queue durumu: ${requestQueue.running}/${requestQueue.maxConcurrent} çalışıyor, ${requestQueue.queue.length} bekliyor`);
     
-    // KRITIK: Queue'ya ekle
+    // KRİTİK: Queue'ya ekle - EAGAIN hatalarını önlemek için
     const result = await requestQueue.add(async () => {
-      console.log(`🚀 [Queue] ${asinList[0]} (${asinList.length} ASIN) icin HEDEF PAZAR seller bilgileri cekiliyor (${requestQueue.running}/${requestQueue.maxConcurrent}, queue: ${requestQueue.queue.length})`);
+      console.log(`🚀 [Target Queue] ${asinList[0]} (${asinList.length} ASIN) için hedef pazar seller bilgileri çekiliyor (${requestQueue.running}/${requestQueue.maxConcurrent}, queue: ${requestQueue.queue.length})`);
       try {
         if (asinList.length > 1) {
-          // scrapingMarketplace'i sourceMarketplace olarak gec (playwrightService bu parametreyi kullaniyor)
+          // playwrightService'e scrapingMarketplace'i sourceMarketplace parametresi olarak geçiyoruz
+          // çünkü playwrightService zaten sourceMarketplace parametresine göre URL oluşturuyor
           return await playwrightService.getSellerInfoBatch(asinList, scrapingMarketplace, targetCountry);
         }
         return await playwrightService.getSellerInfo(asinList[0], scrapingMarketplace, targetCountry);
@@ -142,18 +145,18 @@ router.post('/', async (req, res, next) => {
                         errorString.includes('Failed to launch');
         
         if (isEAGAIN) {
-          console.error(`❌ [Queue] ${asinList[0]} icin seller bilgileri EAGAIN hatasi`);
+          console.error(`❌ [Target Queue] ${asinList[0]} için seller bilgileri EAGAIN hatası - Railway kaynak limiti aşıldı`);
           throw {
             ...error,
             isEAGAIN: true,
-            message: `Railway kaynak limiti asildi (EAGAIN). Lutfen birkac saniye bekleyip tekrar deneyin.`
+            message: `Railway kaynak limiti aşıldı (EAGAIN). Lütfen birkaç saniye bekleyip tekrar deneyin.`
           };
         }
         throw error;
       }
     });
     
-    console.log(`📤 [Target Seller] Seller info response hazirlaniyor:`, {
+    console.log(`📤 [Target Seller Service] Seller info response hazırlanıyor:`, {
       success: result.success,
       hasData: !!result.data,
       sellersCount: result.data?.sellers?.length || 0,
@@ -162,36 +165,36 @@ router.post('/', async (req, res, next) => {
     });
     
     if (result.success) {
-      // KRITIK: Veri cekildi — HEMEN TargetSeller tablosuna kaydet
+      // KRİTİK: Veri çekildi — HEMEN Target-Seller-Postgresql'e kaydet
       const sellersList = result.data?.sellers || result.data?.offers || [];
       if (sellersList.length > 0) {
-        sellerDbService.saveSellers(asinList[0], scrapingMarketplace, targetCountry, sellersList)
-          .catch(e => console.error(`❌ [TargetSellerDB] ${asinList[0]} kayit hatasi:`, e.message));
+        // Fire-and-forget — response'u geciktirmeden arka planda kaydet
+        targetSellerDbService.saveSellers(asinList[0], scrapingMarketplace, targetCountry, sellersList)
+          .catch(e => console.error(`❌ [TargetSellerDB] ${asinList[0]} kayıt hatası:`, e.message));
       }
       res.json({ ok: true, data: result.data });
     } else {
       res.status(result.status || 500).json({ 
         ok: false, 
-        error: result.error || 'Failed to get seller information' 
+        error: result.error || 'Failed to get target seller information' 
       });
     }
   } catch (error) {
-    console.error(`❌ [Target Seller] Seller info error:`, error.message);
+    console.error(`❌ [Target Seller Service] Seller info error:`, error.message);
     next(error);
   }
 });
 
 /**
  * GET /api/sellers/:asin
- * HEDEF PAZAR satici bilgilerini Playwright ile cek (GET method)
+ * Get TARGET marketplace seller information for a product using Playwright (GET method)
  */
 router.get('/:asin', async (req, res, next) => {
   try {
     const { asin } = req.params;
-    const { marketplace = 'amazon.com', targetMarketplace, targetCountry } = req.query;
-    
-    // targetMarketplace oncelikli, yoksa marketplace kullan
-    const scrapingMarketplace = targetMarketplace || marketplace || 'amazon.com';
+    // KRİTİK FARK: marketplace parametresi = targetMarketplace (hedef pazar)
+    const { marketplace = 'amazon.com', targetCountry } = req.query;
+    const scrapingMarketplace = marketplace;
     
     if (!asin) {
       return res.status(400).json({ 
@@ -200,11 +203,12 @@ router.get('/:asin', async (req, res, next) => {
       });
     }
     
-    console.log(`📡 [Target Seller] Seller info request (GET): ${asin} from ${scrapingMarketplace} (HEDEF PAZAR)`);
-    console.log(`📊 [Queue] Queue durumu: ${requestQueue.running}/${requestQueue.maxConcurrent} calisiyor, ${requestQueue.queue.length} bekliyor`);
+    console.log(`📡 [Target Seller Service] Seller info request (GET): ${asin} from ${scrapingMarketplace} (hedef pazar)`);
+    console.log(`📊 [Target Queue] Queue durumu: ${requestQueue.running}/${requestQueue.maxConcurrent} çalışıyor, ${requestQueue.queue.length} bekliyor`);
     
+    // KRİTİK: Queue'ya ekle - EAGAIN hatalarını önlemek için
     const result = await requestQueue.add(async () => {
-      console.log(`🚀 [Queue] ${asin} icin HEDEF PAZAR seller bilgileri cekiliyor (GET) (${requestQueue.running}/${requestQueue.maxConcurrent}, queue: ${requestQueue.queue.length})`);
+      console.log(`🚀 [Target Queue] ${asin} için hedef pazar seller bilgileri çekiliyor (GET) (${requestQueue.running}/${requestQueue.maxConcurrent}, queue: ${requestQueue.queue.length})`);
       try {
         return await playwrightService.getSellerInfo(asin, scrapingMarketplace, targetCountry);
       } catch (error) {
@@ -216,11 +220,11 @@ router.get('/:asin', async (req, res, next) => {
                         errorString.includes('Failed to launch');
         
         if (isEAGAIN) {
-          console.error(`❌ [Queue] ${asin} icin seller bilgileri EAGAIN hatasi (GET)`);
+          console.error(`❌ [Target Queue] ${asin} için seller bilgileri EAGAIN hatası (GET) - Railway kaynak limiti aşıldı`);
           throw {
             ...error,
             isEAGAIN: true,
-            message: `Railway kaynak limiti asildi (EAGAIN). Lutfen birkac saniye bekleyip tekrar deneyin.`
+            message: `Railway kaynak limiti aşıldı (EAGAIN). Lütfen birkaç saniye bekleyip tekrar deneyin.`
           };
         }
         throw error;
@@ -228,20 +232,21 @@ router.get('/:asin', async (req, res, next) => {
     });
     
     if (result.success) {
+      // KRİTİK: GET ile de veri çekildiğinde Target DB'ye kaydet
       const sellersList = result.data?.sellers || result.data?.offers || [];
       if (sellersList.length > 0) {
-        sellerDbService.saveSellers(asin, scrapingMarketplace, targetCountry, sellersList)
-          .catch(e => console.error(`❌ [TargetSellerDB] ${asin} kayit hatasi (GET):`, e.message));
+        targetSellerDbService.saveSellers(asin, scrapingMarketplace, targetCountry, sellersList)
+          .catch(e => console.error(`❌ [TargetSellerDB] ${asin} kayıt hatası (GET):`, e.message));
       }
       res.json({ ok: true, data: result.data });
     } else {
       res.status(result.status || 500).json({ 
         ok: false, 
-        error: result.error || 'Failed to get seller information' 
+        error: result.error || 'Failed to get target seller information' 
       });
     }
   } catch (error) {
-    console.error(`❌ [Target Seller] Seller info error:`, error.message);
+    console.error(`❌ [Target Seller Service] Seller info error:`, error.message);
     next(error);
   }
 });
