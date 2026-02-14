@@ -1,0 +1,29 @@
+{
+  "name": "target-seller-playwright-service",
+  "version": "1.0.0",
+  "description": "Target Seller Playwright Service - Hedef pazar satici bilgileri cekme servisi",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "nodemon src/server.js",
+    "test": "echo \"No tests specified\" && exit 0"
+  },
+  "keywords": ["vixify", "playwright", "target-seller", "scraping"],
+  "author": "Vixify Team",
+  "license": "MIT",
+  "type": "commonjs",
+  "engines": {
+    "node": "20",
+    "npm": ">=10.0.0"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "pg": "^8.13.1",
+    "playwright": "^1.40.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2"
+  }
+}

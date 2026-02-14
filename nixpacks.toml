@@ -1,0 +1,16 @@
+providers = ["node"]
+
+[variables]
+NODE_VERSION = "20"
+
+[phases.install]
+cmds = [
+  "npm ci || npm install",
+  "npx playwright install chromium --with-deps"
+]
+
+[phases.build]
+cmds = []
+
+[start]
+cmd = "npm start"
