@@ -195,6 +195,66 @@ router.post('/', async (req, res, next) => {
 });
 
 /**
+ * GET /api/sellers/db/:asin
+ * DB'den kayıtlı target seller bilgilerini oku (Playwright çağırmadan)
+ * KRİTİK: Bu route /:asin'den ÖNCE tanımlanmalı (Express route matching)
+ */
+router.get('/db/:asin', async (req, res) => {
+  try {
+    const { asin } = req.params;
+    const { targetMarketplace } = req.query;
+    
+    if (!asin) {
+      return res.status(400).json({ ok: false, error: 'ASIN is required' });
+    }
+    
+    console.log(`📖 [Target Seller Service] DB read request: ${asin} (marketplace: ${targetMarketplace || 'all'})`);
+    
+    const sellers = await targetSellerDbService.getSellersForAsin(asin, targetMarketplace || null);
+    
+    console.log(`✅ [Target Seller Service] DB'den ${sellers.length} satıcı okundu: ${asin}`);
+    
+    return res.json({
+      ok: true,
+      asin,
+      targetMarketplace: targetMarketplace || null,
+      sellers: sellers.map(s => ({
+        id: s.id,
+        sellerName: s.sellerName,
+        soldBy: s.soldBy,
+        sellerId: s.sellerId,
+        sellerRating: s.sellerRating,
+        sellerRatingCount: s.sellerRatingCount,
+        positivePercentage: s.positivePercentage,
+        condition: s.condition,
+        isNew: s.isNew,
+        isUsed: s.isUsed,
+        price: s.price,
+        priceText: s.priceText,
+        primePrice: s.primePrice || null,
+        primePriceText: s.primePriceText || null,
+        shipsFrom: s.shipsFrom,
+        shippingPrice: s.shippingPrice,
+        standardShippingPrice: s.standardShippingPrice,
+        expressShippingPrice: s.expressShippingPrice,
+        deliveryDate: s.deliveryDate,
+        standardDeliveryDate: s.standardDeliveryDate,
+        expressDeliveryDate: s.expressDeliveryDate,
+        marketplace: s.marketplace || 'target',
+        targetMarketplace: s.targetMarketplace,
+        offerIndex: s.offerIndex,
+        fetchedAt: s.fetchedAt
+      })),
+      totalSellers: sellers.length,
+      source: 'target-seller-db-direct'
+    });
+  } catch (error) {
+    console.error(`❌ [Target Seller Service] DB read error:`, error.message);
+    return res.json({ ok: true, asin: req.params?.asin, sellers: [], totalSellers: 0, source: 'error' });
+  }
+});
+
+/**
  * GET /api/sellers/:asin
  * Get TARGET marketplace seller information for a product using Playwright (GET method)
  */

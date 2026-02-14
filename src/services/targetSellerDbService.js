@@ -193,4 +193,32 @@ async function testConnection() {
   }
 }
 
-module.exports = { saveSellers, deleteSellersForAsin, testConnection };
+/**
+ * ASIN + targetMarketplace için DB'deki satıcıları oku.
+ * Backend'in target-sellers/:asin endpoint'inin alternatifi.
+ *
+ * @param {string} asin
+ * @param {string} targetMarketplace
+ * @returns {Promise<Array>}
+ */
+async function getSellersForAsin(asin, targetMarketplace) {
+  const db = getPool();
+  if (!db) return [];
+  try {
+    let query, params;
+    if (targetMarketplace) {
+      query = 'SELECT * FROM "TargetSeller" WHERE asin = $1 AND "targetMarketplace" = $2 ORDER BY "fetchedAt" DESC';
+      params = [asin, targetMarketplace];
+    } else {
+      query = 'SELECT * FROM "TargetSeller" WHERE asin = $1 ORDER BY "fetchedAt" DESC';
+      params = [asin];
+    }
+    const result = await db.query(query, params);
+    return result.rows || [];
+  } catch (e) {
+    console.error(`❌ [TargetSellerDB] ${asin} okuma hatası:`, e.message);
+    return [];
+  }
+}
+
+module.exports = { saveSellers, deleteSellersForAsin, testConnection, getSellersForAsin };
