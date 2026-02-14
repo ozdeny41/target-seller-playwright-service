@@ -3166,6 +3166,54 @@ class PlaywrightService {
       
       // Sayfanın yüklenmesini bekle
       await this.safeWait(page, 3000);
+      
+      // KRİTİK: "Page Not Found" / 404 / köpek sayfası kontrolü
+      // Amazon hedef pazarda ürün yoksa "Page Not Found" gösterir (köpek resimli sayfa)
+      // Bu durum tespit edildiğinde erken dönüş yapılır — ürün hedef pazarda YOK
+      try {
+        const pageTitle = await page.title().catch(() => '');
+        const bodyTextForCheck = await page.evaluate(() => {
+          // Sadece ilk 2000 karakter — performans için
+          return (document.body?.textContent || '').substring(0, 2000);
+        }).catch(() => '');
+        const currentUrlCheck = page.url();
+        
+        const isPageNotFound = 
+          /page\s*not\s*found/i.test(pageTitle) ||
+          /page\s*not\s*found/i.test(bodyTextForCheck) ||
+          /sorry.*couldn.*find.*page/i.test(bodyTextForCheck) ||
+          /looking\s+for\s+something/i.test(bodyTextForCheck) ||
+          /the\s+web\s+address.*is\s+not\s+a\s+functioning\s+page/i.test(bodyTextForCheck) ||
+          /we.*couldn.*find.*page/i.test(bodyTextForCheck) ||
+          currentUrlCheck.includes('/404') ||
+          currentUrlCheck.includes('/ref=cs_404');
+        
+        if (isPageNotFound) {
+          console.log(`🚫 ${this._tag} PAGE NOT FOUND tespit edildi — ürün hedef pazarda mevcut değil`);
+          console.log(`🚫 ${this._tag} Sayfa başlığı: "${pageTitle}"`);
+          console.log(`🚫 ${this._tag} URL: ${currentUrlCheck}`);
+          return {
+            success: true,
+            data: {
+              asin: asin,
+              sourceMarketplace: sourceMarketplace,
+              targetCountry: targetCountry,
+              totalSellers: 0,
+              sellers: [],
+              marketplace: 'source',
+              buybox: null,
+              hasNoBuybox: true,
+              hasNoSellers: true,
+              pageNotFound: true,
+              unavailableMessage: 'Page Not Found - ürün hedef pazarda mevcut değil'
+            },
+            error: null,
+            status: 200
+          };
+        }
+      } catch (pageCheckErr) {
+        console.warn(`⚠️ ${this._tag} Page Not Found kontrolü hatası: ${pageCheckErr.message}`);
+      }
 
       if (!isOnAodPage) {
         console.log(`⏳ ${this._tag} Sayfa yüklendi, "New & Used" linki aranıyor...`);

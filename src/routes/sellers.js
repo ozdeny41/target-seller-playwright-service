@@ -165,9 +165,10 @@ router.post('/', async (req, res, next) => {
     });
     
     if (result.success) {
-      // KRİTİK: hasNoSellers flag'i varsa — ürün satışta değil, DB'deki eski sahte kayıtları temizle
-      if (result.data?.hasNoSellers) {
-        console.log(`🚫 [Target Seller Service] ${asinList[0]} için satıcı YOK (unavailable) — DB'deki eski kayıtlar temizleniyor`);
+      // KRİTİK: hasNoSellers / pageNotFound flag'i varsa — ürün satışta değil veya hedef pazarda yok
+      if (result.data?.hasNoSellers || result.data?.pageNotFound) {
+        const reason = result.data?.pageNotFound ? 'PAGE NOT FOUND (ürün hedef pazarda yok)' : 'unavailable (satıcı yok)';
+        console.log(`🚫 [Target Seller Service] ${asinList[0]} → ${reason} — DB'deki eski kayıtlar temizleniyor`);
         targetSellerDbService.deleteSellersForAsin(asinList[0], scrapingMarketplace)
           .catch(e => console.error(`❌ [TargetSellerDB] ${asinList[0]} eski kayıt silme hatası:`, e.message));
         return res.json({ ok: true, data: result.data });
@@ -240,9 +241,10 @@ router.get('/:asin', async (req, res, next) => {
     });
     
     if (result.success) {
-      // KRİTİK: hasNoSellers flag'i varsa — ürün satışta değil, DB'deki eski sahte kayıtları temizle
-      if (result.data?.hasNoSellers) {
-        console.log(`🚫 [Target Seller Service] ${asin} için satıcı YOK (unavailable) — DB'deki eski kayıtlar temizleniyor (GET)`);
+      // KRİTİK: hasNoSellers / pageNotFound flag'i varsa — ürün satışta değil veya hedef pazarda yok (GET)
+      if (result.data?.hasNoSellers || result.data?.pageNotFound) {
+        const reason = result.data?.pageNotFound ? 'PAGE NOT FOUND' : 'unavailable';
+        console.log(`🚫 [Target Seller Service] ${asin} → ${reason} — DB'deki eski kayıtlar temizleniyor (GET)`);
         targetSellerDbService.deleteSellersForAsin(asin, scrapingMarketplace)
           .catch(e => console.error(`❌ [TargetSellerDB] ${asin} eski kayıt silme hatası (GET):`, e.message));
         return res.json({ ok: true, data: result.data });
