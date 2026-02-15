@@ -3240,7 +3240,20 @@ class PlaywrightService {
         
         // Adım 2: Ürün sayfasına git + HEMEN 404 kontrolü (gereksiz 2dk beklemeyi önle)
         console.log(`🔗 ${this._tag} Ürün sayfasına gidiliyor: ${productUrl}`);
-        await page.goto(productUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        let productPageLoaded = false;
+        for (let pdpRetry = 0; pdpRetry < 3 && !productPageLoaded; pdpRetry++) {
+          try {
+            if (pdpRetry > 0) {
+              console.log(`🔄 ${this._tag} Ürün sayfası retry #${pdpRetry}...`);
+              await this.safeWait(page, 2000);
+            }
+            await page.goto(productUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
+            productPageLoaded = true;
+          } catch (pdpNavErr) {
+            console.warn(`⚠️ ${this._tag} Ürün sayfası navigasyon hatası (deneme ${pdpRetry + 1}/3): ${pdpNavErr.message?.substring(0, 100)}`);
+            if (pdpRetry === 2) throw pdpNavErr;
+          }
+        }
         await this.safeWait(page, 2000);
         
         // KRİTİK: ERKEN Page Not Found kontrolü — 404 ise anında dön, "Deliver to" butonu arama
@@ -3339,14 +3352,40 @@ class PlaywrightService {
           console.log(`✅ ${this._tag} Teslimat adresi doğru: "${deliveryCheck}"`);
         }
         
-        // Adım 4: Direkt AOD URL'ye git (ürün sayfasını tekrar yüklemeden)
+        // Adım 4: Direkt AOD URL'ye git (retry mantığıyla — Amazon rate-limit'e takılabiliyor)
         console.log(`🔗 ${this._tag} directAodUrl ile AOD sayfasına gidiliyor: ${directAodUrl}`);
-        await page.goto(directAodUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        let aodNavigated = false;
+        for (let aodRetry = 0; aodRetry < 3 && !aodNavigated; aodRetry++) {
+          try {
+            if (aodRetry > 0) {
+              console.log(`🔄 ${this._tag} AOD navigasyon retry #${aodRetry}...`);
+              await this.safeWait(page, 3000);
+            }
+            await page.goto(directAodUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
+            aodNavigated = true;
+          } catch (aodNavErr) {
+            console.warn(`⚠️ ${this._tag} AOD navigasyon hatası (deneme ${aodRetry + 1}/3): ${aodNavErr.message?.substring(0, 100)}`);
+            if (aodRetry === 2) throw aodNavErr; // Son deneme de başarısızsa hata fırlat
+          }
+        }
         await this.safeWait(page, 2000);
       } else {
         // targetCountry yoksa direkt AOD URL'ye git
         console.log(`🔗 ${this._tag} AOD sayfasına gidiliyor (ülke seçimi yok): ${directAodUrl}`);
-        await page.goto(directAodUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        let aodNavigated = false;
+        for (let aodRetry = 0; aodRetry < 3 && !aodNavigated; aodRetry++) {
+          try {
+            if (aodRetry > 0) {
+              console.log(`🔄 ${this._tag} AOD navigasyon retry #${aodRetry}...`);
+              await this.safeWait(page, 3000);
+            }
+            await page.goto(directAodUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
+            aodNavigated = true;
+          } catch (aodNavErr) {
+            console.warn(`⚠️ ${this._tag} AOD navigasyon hatası (deneme ${aodRetry + 1}/3): ${aodNavErr.message?.substring(0, 100)}`);
+            if (aodRetry === 2) throw aodNavErr;
+          }
+        }
         await this.safeWait(page, 2000);
       }
       
