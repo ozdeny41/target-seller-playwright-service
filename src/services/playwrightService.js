@@ -2529,9 +2529,12 @@ class PlaywrightService {
         // "Sold by ..." metninden çıkar
         const soldByMatch = offerText.match(/Sold by\s+([^\n\r]+?)(?:\s+Seller rating|$)/i);
         if (soldByMatch) {
-          soldBy = soldByMatch[1].trim();
+          soldBy = soldByMatch[1].trim()
+            .replace(/\s*See\s+(less|more)\s*/gi, '') // "See less" / "See more" temizle
+            .replace(/\s{2,}/g, ' ')                   // Çoklu boşlukları tek boşluğa indir
+            .trim();
           sellerName = soldBy;
-          console.log(`✅ ${this._tag} Offer ${index} soldBy offer element'inden çekildi: ${soldBy} -> sellerName: ${sellerName}`);
+          console.log(`✅ ${this._tag} Offer ${index} soldBy offer element'inden çekildi: ${soldBy}`);
         }
         
         // Seller rating - "Seller rating is 5 out of 5 stars"
@@ -2854,41 +2857,70 @@ class PlaywrightService {
         const months = '(?:January|February|March|April|May|June|July|August|September|October|November|December)';
         const days = '(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)';
         
-        // 1. Tek tarih formatı: "$30.96 delivery Tuesday, January 27"
-        const deliveryMatch = offerText.match(new RegExp(`[\\$£€]?\\s*([\\d,]+\\.?\\d*)\\s+delivery\\s+(${days},?\\s+${months}\\s+\\d{1,2})`, 'i'));
-        if (deliveryMatch) {
-          shippingPrice = parseFloat(deliveryMatch[1].replace(/,/g, ''));
-          deliveryDate = deliveryMatch[2].trim();
-          console.log(`✅ ${this._tag} Offer ${index} delivery offer element'inden çekildi: shippingPrice: ${shippingPrice}, deliveryDate: ${deliveryDate}`);
+        // 0. "FREE delivery" kontrolü — shippingPrice = 0
+        if (/free\s+delivery/i.test(offerText)) {
+          shippingPrice = 0;
+          console.log(`✅ ${this._tag} Offer ${index} FREE delivery tespit edildi: shippingPrice=0`);
+        }
+        
+        // 1a. UK tarih formatı: "$30.96 delivery Tuesday, 17 February" veya "FREE delivery Tuesday, 17 February"
+        const deliveryMatchUK = offerText.match(new RegExp(`(?:free|[\\$£€]?\\s*[\\d,]+\\.?\\d*)\\s+delivery\\s+(${days},?\\s+\\d{1,2}\\s+${months})`, 'i'));
+        // 1b. US tarih formatı: "$30.96 delivery Tuesday, January 27"
+        const deliveryMatchUS = offerText.match(new RegExp(`(?:free|[\\$£€]?\\s*[\\d,]+\\.?\\d*)\\s+delivery\\s+(${days},?\\s+${months}\\s+\\d{1,2})`, 'i'));
+        
+        if (deliveryMatchUK) {
+          deliveryDate = deliveryMatchUK[1].trim();
+          if (shippingPrice === null) {
+            const priceM = offerText.match(/[\$£€]?\s*([\d,]+\.?\d*)\s+delivery/i);
+            if (priceM) shippingPrice = parseFloat(priceM[1].replace(/,/g, ''));
+          }
+          console.log(`✅ ${this._tag} Offer ${index} delivery (UK format): shippingPrice: ${shippingPrice}, deliveryDate: ${deliveryDate}`);
+        } else if (deliveryMatchUS) {
+          deliveryDate = deliveryMatchUS[1].trim();
+          if (shippingPrice === null) {
+            const priceM = offerText.match(/[\$£€]?\s*([\d,]+\.?\d*)\s+delivery/i);
+            if (priceM) shippingPrice = parseFloat(priceM[1].replace(/,/g, ''));
+          }
+          console.log(`✅ ${this._tag} Offer ${index} delivery (US format): shippingPrice: ${shippingPrice}, deliveryDate: ${deliveryDate}`);
         } else {
           // 2. Tarih aralığı formatı: "$21.94 delivery March 2 - 19"
           const rangeDeliveryMatch = offerText.match(new RegExp(`[\\$£€]?\\s*([\\d,]+\\.?\\d*)\\s+delivery\\s+(${months}\\s+\\d{1,2}\\s*-\\s*(?:${months}\\s+)?\\d{1,2})`, 'i'));
           if (rangeDeliveryMatch) {
-            shippingPrice = parseFloat(rangeDeliveryMatch[1].replace(/,/g, ''));
+            if (shippingPrice === null) shippingPrice = parseFloat(rangeDeliveryMatch[1].replace(/,/g, ''));
             deliveryDate = rangeDeliveryMatch[2].trim();
-            console.log(`✅ ${this._tag} Offer ${index} delivery (aralık) offer element'inden çekildi: shippingPrice: ${shippingPrice}, deliveryDate: ${deliveryDate}`);
-          } else {
+            console.log(`✅ ${this._tag} Offer ${index} delivery (aralık): shippingPrice: ${shippingPrice}, deliveryDate: ${deliveryDate}`);
+          } else if (!deliveryDate) {
             // Sadece shipping price
-            const shippingMatch = offerText.match(/[\$£€]?\s*([\d,]+\.?\d*)\s+delivery/i);
-            if (shippingMatch) {
-              shippingPrice = parseFloat(shippingMatch[1].replace(/,/g, ''));
-              console.log(`✅ ${this._tag} Offer ${index} shippingPrice offer element'inden çekildi: ${shippingPrice}`);
+            if (shippingPrice === null) {
+              const shippingMatch = offerText.match(/[\$£€]?\s*([\d,]+\.?\d*)\s+delivery/i);
+              if (shippingMatch) {
+                shippingPrice = parseFloat(shippingMatch[1].replace(/,/g, ''));
+                console.log(`✅ ${this._tag} Offer ${index} shippingPrice: ${shippingPrice}`);
+              }
             }
             
-            // Sadece delivery date (tek tarih)
-            const dateMatch = offerText.match(new RegExp(`(${days},?\\s+${months}\\s+\\d{1,2})`, 'i'));
-            if (dateMatch) {
-              deliveryDate = dateMatch[1].trim();
-              console.log(`✅ ${this._tag} Offer ${index} deliveryDate offer element'inden çekildi: ${deliveryDate}`);
+            // Sadece delivery date — UK ve US formatları
+            const dateMatchUK = offerText.match(new RegExp(`(${days},?\\s+\\d{1,2}\\s+${months})`, 'i'));
+            const dateMatchUS = offerText.match(new RegExp(`(${days},?\\s+${months}\\s+\\d{1,2})`, 'i'));
+            if (dateMatchUK) {
+              deliveryDate = dateMatchUK[1].trim();
+              console.log(`✅ ${this._tag} Offer ${index} deliveryDate (UK): ${deliveryDate}`);
+            } else if (dateMatchUS) {
+              deliveryDate = dateMatchUS[1].trim();
+              console.log(`✅ ${this._tag} Offer ${index} deliveryDate (US): ${deliveryDate}`);
             }
           }
         }
         
-        // Express delivery - "Or fastest delivery Friday, January 23" veya "Or fastest delivery March 2 - 16"
-        const expressMatch = offerText.match(new RegExp(`fastest\\s+delivery\\s+((?:${days},?\\s+)?${months}\\s+\\d{1,2}(?:\\s*-\\s*(?:${months}\\s+)?\\d{1,2})?)`, 'i'));
-        if (expressMatch) {
-          expressDeliveryDate = expressMatch[1].trim();
-          console.log(`✅ ${this._tag} Offer ${index} expressDeliveryDate offer element'inden çekildi: ${expressDeliveryDate}`);
+        // Express delivery - UK: "Or fastest delivery Friday, 14 February" / US: "Or fastest delivery Friday, January 23"
+        const expressMatchUK = offerText.match(new RegExp(`fastest\\s+delivery\\s+((?:${days},?\\s+)?\\d{1,2}\\s+${months})`, 'i'));
+        const expressMatchUS = offerText.match(new RegExp(`fastest\\s+delivery\\s+((?:${days},?\\s+)?${months}\\s+\\d{1,2}(?:\\s*-\\s*(?:${months}\\s+)?\\d{1,2})?)`, 'i'));
+        if (expressMatchUK) {
+          expressDeliveryDate = expressMatchUK[1].trim();
+          console.log(`✅ ${this._tag} Offer ${index} expressDeliveryDate (UK): ${expressDeliveryDate}`);
+        } else if (expressMatchUS) {
+          expressDeliveryDate = expressMatchUS[1].trim();
+          console.log(`✅ ${this._tag} Offer ${index} expressDeliveryDate (US): ${expressDeliveryDate}`);
         }
         
         // Eğer bulunamadıysa, offer element içinden delivery bilgilerini çek
@@ -2900,10 +2932,18 @@ class PlaywrightService {
               if (standardDeliveryElement) {
                 const standardDeliveryText = await standardDeliveryElement.textContent().then(t => t.trim()).catch(() => null);
                 if (standardDeliveryText) {
-                  const shippingMatch = standardDeliveryText.match(/[\$£€]?\s*([\d,]+\.?\d*)\s+delivery/i);
-                  if (shippingMatch) shippingPrice = parseFloat(shippingMatch[1].replace(/,/g, ''));
-                  const dateMatch = standardDeliveryText.match(/((?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),?\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2})/i);
-                  if (dateMatch) deliveryDate = dateMatch[1].trim();
+                  // "FREE delivery" → shippingPrice = 0
+                  if (/free\s+delivery/i.test(standardDeliveryText)) {
+                    shippingPrice = 0;
+                  } else {
+                    const shippingMatch = standardDeliveryText.match(/[\$£€]?\s*([\d,]+\.?\d*)\s+delivery/i);
+                    if (shippingMatch) shippingPrice = parseFloat(shippingMatch[1].replace(/,/g, ''));
+                  }
+                  // Tarih formatları: "Tuesday, 17 February" (UK) veya "Tuesday, February 17" (US)
+                  const dateMatchUK = standardDeliveryText.match(/((?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),?\s+\d{1,2}\s+(?:January|February|March|April|May|June|July|August|September|October|November|December))/i);
+                  const dateMatchUS = standardDeliveryText.match(/((?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),?\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2})/i);
+                  if (dateMatchUK) deliveryDate = dateMatchUK[1].trim();
+                  else if (dateMatchUS) deliveryDate = dateMatchUS[1].trim();
                   console.log(`✅ ${this._tag} Offer ${index} standard delivery sidebar'dan çekildi: ${standardDeliveryText} -> shippingPrice: ${shippingPrice}, deliveryDate: ${deliveryDate}`);
                 }
               }
@@ -2911,9 +2951,14 @@ class PlaywrightService {
               if (expressDeliveryElement) {
                 const expressDeliveryText = await expressDeliveryElement.textContent().then(t => t.trim()).catch(() => null);
                 if (expressDeliveryText) {
-                  const dateMatch = expressDeliveryText.match(/((?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),?\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2})/i);
-                  if (dateMatch) {
-                    expressDeliveryDate = dateMatch[1].trim();
+                  // UK format: "Friday, 14 February" or US format: "Friday, February 14"
+                  const dateMatchUK = expressDeliveryText.match(/((?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),?\s+\d{1,2}\s+(?:January|February|March|April|May|June|July|August|September|October|November|December))/i);
+                  const dateMatchUS = expressDeliveryText.match(/((?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),?\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2})/i);
+                  if (dateMatchUK) {
+                    expressDeliveryDate = dateMatchUK[1].trim();
+                    console.log(`✅ ${this._tag} Offer ${index} express delivery sidebar'dan çekildi: ${expressDeliveryText} -> expressDeliveryDate: ${expressDeliveryDate}`);
+                  } else if (dateMatchUS) {
+                    expressDeliveryDate = dateMatchUS[1].trim();
                     console.log(`✅ ${this._tag} Offer ${index} express delivery sidebar'dan çekildi: ${expressDeliveryText} -> expressDeliveryDate: ${expressDeliveryDate}`);
                   }
                 }
@@ -3193,10 +3238,38 @@ class PlaywrightService {
         // Gereksiz navigasyonları atla — direkt AOD URL'ye git (hızlı + timeout yok)
         // Glow API'yi sadece bir kez çalıştır (cookie güncelleme için)
         
-        // Adım 2: Ürün sayfasına git + Glow API (tek navigasyon)
+        // Adım 2: Ürün sayfasına git + HEMEN 404 kontrolü (gereksiz 2dk beklemeyi önle)
         console.log(`🔗 ${this._tag} Ürün sayfasına gidiliyor: ${productUrl}`);
         await page.goto(productUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
         await this.safeWait(page, 2000);
+        
+        // KRİTİK: ERKEN Page Not Found kontrolü — 404 ise anında dön, "Deliver to" butonu arama
+        const earlyPageTitle = await page.title().catch(() => '');
+        const earlyHtml = await page.evaluate(() => document.body ? document.body.innerHTML.substring(0, 2000) : '').catch(() => '');
+        const isEarlyPageNotFound = 
+          earlyPageTitle.toLowerCase().includes('page not found') ||
+          earlyHtml.includes('Looking for something?') ||
+          earlyHtml.includes("The Web address you entered is not a functioning page") ||
+          earlyHtml.includes('cs_404_link') ||
+          earlyHtml.includes('kailey-kitty');
+        
+        if (isEarlyPageNotFound) {
+          console.log(`🚫 ${this._tag} ERKEN PAGE NOT FOUND tespit edildi — ürün hedef pazarda mevcut değil (${earlyPageTitle})`);
+          console.log(`🚫 ${this._tag} URL: ${page.url()}`);
+          return {
+            asin,
+            sourceMarketplace,
+            targetCountry,
+            totalSellers: 0,
+            sellers: [],
+            marketplace: 'source',
+            buybox: null,
+            hasNoBuybox: true,
+            hasNoSellers: true,
+            pageNotFound: true,
+            unavailableMessage: 'Page Not Found - ürün hedef pazarda mevcut değil'
+          };
+        }
         
         // Adım 3: Glow API ile teslimat ülkesini doğrula
         console.log(`🌍 ${this._tag} Glow API + postcode ile ${amazonCountryCode} doğrulanıyor...`);
